@@ -2,6 +2,7 @@ import os
 import sys
 import logging
 from atlassian import Jira
+import psycopg2
 
 from utils import plog
 
@@ -31,7 +32,7 @@ def get_token():
         the token should be listed in the .bash_profile file with
         the key `JIRA_API_TOKEN`.
 
-       :return key: str, JIra API token
+       :return key: str, Jira API token
     """
     key = os.getenv('JIRA_API_TOKEN')
     return key
@@ -42,6 +43,7 @@ def main():
     logger = setup_logging('sothlice', 'sothlice.log')
     logger.info('Starting ')
 
+    # ----------------- JIRA -----------------
     # connect to Jira
     jira = Jira(
         url='https://philosophe.atlassian.net',
@@ -58,11 +60,46 @@ def main():
     # logger.info(f"projects: \n{plog(projects)}")
 
     # get the tickets
-    jql_request = 'project = "Sample Scrum Project" ' \
+    jql_query = 'project = "Sample Scrum Project" ' \
                   'AND status NOT IN (Closed, Resolved) ' \
                   'ORDER BY issuekey'
-    issues = jira.jql(jql_request)
-    logger.info(f"issues: \n{plog(issues)}")
+    issues = jira.jql(jql_query)
+    # logger.info(f"issues: \n{plog(issues)}")
+
+    # ----------------- massage data -----------------
+    # create the data container for the extracted ticket information
+    ticket_data = []
+
+    # extract the desired ticket information
+    for issue in issues['issues']:
+        ticket = {
+            'key': issue['key'],
+            'type': issue['fields']['issuetype']['name'],
+            'status': issue['fields']['status']['name'],
+            'summary': issue['fields']['summary'],
+            'description': issue['fields']['description'],
+            'created': issue['fields']['created'],
+            'updated': issue['fields']['updated'],
+        }
+        # assignee can be null
+        assignee = issue['fields'].get('assignee')
+        ticket['assignee'] = issue['fields']['assignee']['displayName'] \
+            if assignee else assignee
+
+        # add this reduced ticket to the data container
+        ticket_data.append(ticket)
+
+    logger.info(f"ticket_data: \n{plog(ticket_data)}")
+
+    # ----------------- db -----------------
+    # connect to the database
+    connection = psycopg2.connect("dbname=qdata user=derek")
+
+    # Open a cursor to perform database operations
+    cursor = connection.cursor()
+
+    logger.info(f"\ncursor: {cursor}")
+
 
 
 if __name__ == '__main__':
