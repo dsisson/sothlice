@@ -1,1 +1,2 @@
 atlassian-python-api >= 3.41.14
+psycopg2-binary >= 2.9.9
