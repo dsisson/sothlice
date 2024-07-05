@@ -167,3 +167,4 @@ cython_debug/
 /.idea/inspectionProfiles/Project_Default.xml
 /.idea/sothlice.iml
 /.idea/vcs.xml
+/.idea/sqldialects.xml
