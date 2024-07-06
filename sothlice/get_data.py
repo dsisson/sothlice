@@ -167,7 +167,7 @@ def create_insert_query(ticket, logger):
 
 def main():
     # start logging
-    logger = setup_logging('sothlice', 'sothlice.log')
+    logger = setup_logging('get_data', 'get_data.log')
     logger.info('Starting ')
 
     # ----------------- JIRA -----------------

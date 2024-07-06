@@ -72,3 +72,18 @@ def plog(content):
                 pass
 
     return formatted_content
+
+
+def write_to_csv_file(content, filename):
+    """
+        Write content to a CSV file.
+
+        :param content: str, the content to write
+        :param filename: str, the filename to write to
+    """
+    import csv
+    with open(filename, 'w', newline='') as f:
+        writer = csv.writer(f)
+
+        for row in content:
+            writer.writerow(row)

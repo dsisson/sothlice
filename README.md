@@ -4,7 +4,7 @@ This is simple base code to:
 * pull tickets from a Jira account
 * clean and enrich the ticket data
 * push that data into a local postgres database
-* (todo) pull data from the db and output as CSV files
+* pull data from the db and output as CSV files
 
 Why? This is core work necessary to managing certain kinds of quality data. This is a tool I built for my own use.
 
@@ -37,7 +37,7 @@ Third, you will have to massage the data model from Jira (because their data mod
 
 Fourth, you can create and maintain a database and tables, and use sothlice to read from  and write to those tables.
 
-Fifth, (todo) you can export data from the tables into CSV files so that you can share reports. 
+Fifth, you can export data from the tables into CSV files so that you can share reports. 
 
 Extra credit: you should be able to connect to other data sources for quality-related info and push that into the db. All it takes is some time and effort. 
 
