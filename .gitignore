@@ -168,3 +168,5 @@ cython_debug/
 /.idea/sothlice.iml
 /.idea/vcs.xml
 /.idea/sqldialects.xml
+/.idea/csv-editor.xml
+/sothlice/db_all.csv
