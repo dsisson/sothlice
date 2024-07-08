@@ -3,6 +3,7 @@ import argparse
 import logging
 from atlassian import Jira
 import psycopg2
+from datetime import datetime, timezone
 
 from utils import plog
 
@@ -58,6 +59,7 @@ def get_tickets_from_jira(jira, logger):
         Get all the non-completed tickets from Jira using the Jira API.
 
        :param jira: Jira, the Jira API object
+       :param logger: logging.Logger, the logger
        :return issues: dict, the Jira tickets
     """
     jql_query = 'project = "Sample Scrum Project" ' \
@@ -72,9 +74,14 @@ def get_tickets_from_jira(jira, logger):
 
 def process_tickets(issues, logger):
     """
-        Process the Jira tickets to extract the desired information.
+        Process the Jira tickets to extract the desired fields
+        and format or enrich the field values.
+
+        Note: if a field is added to `ticket` or renamed, the db schema
+        has to be rebuilt AND the insert query has to be updated.
 
        :param issues: dict, the Jira tickets
+       :param logger: logging.Logger, the logger
        :return ticket_data: list, the extracted ticket information
     """
     # create data container for the extracted ticket information
@@ -87,20 +94,25 @@ def process_tickets(issues, logger):
         id = issue['key']
         ticket_ids.append(id)
 
-        # build the data
-        ticket = {
-            'key': id,
-            'type': issue['fields']['issuetype']['name'],
-            'status': issue['fields']['status']['name'],
-            'summary': issue['fields']['summary'],
-            'description': issue['fields']['description'],
-            'created': issue['fields']['created'],
-            'updated': issue['fields']['updated'],
-        }
+        # build the data (with special handling as needed)
+        ticket = {}
+
+        ticket['key'] = id
+        ticket['type'] = issue['fields']['issuetype']['name']
+        ticket['status'] = issue['fields']['status']['name']
+        ticket['summary'] = issue['fields']['summary']
+        ticket['description'] = issue['fields']['description']
+        ticket['created'] = issue['fields']['created']
+        ticket['updated'] = issue['fields']['updated']
+
         # assignee can be null
         assignee = issue['fields'].get('assignee')
         ticket['assignee'] = issue['fields']['assignee']['displayName'] \
             if assignee else assignee
+
+        # get and set a timestamp for records that are changed by this code
+        processed = datetime.now(timezone.utc).isoformat()
+        ticket['processed'] = processed
 
         # add this reduced ticket to the data container
         ticket_data.append(ticket)
@@ -157,11 +169,12 @@ def create_insert_query(ticket, logger):
     created = ticket['created']
     updated = ticket['updated']
     assignee = ticket['assignee']
+    processed = ticket['processed']
 
     values = (jkey, jtype, status, summary,
-              description, created, updated, assignee)
-    sql = "INSERT INTO jira (jkey, jtype, status, summary, description, created, updated, assignee) " \
-          "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING jkey;"
+              description, created, updated, assignee, processed)
+    sql = "INSERT INTO jira (jkey, jtype, status, summary, description, created, updated, assignee, processed) " \
+          "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING jkey;"
     return sql, values
 
 
