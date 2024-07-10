@@ -3,7 +3,8 @@ import argparse
 import logging
 from atlassian import Jira
 import psycopg2
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from utils import plog
 
@@ -41,11 +42,14 @@ def get_token():
 
 def get_db_mode():
     """
-        Get the database mode from the local ENV. This means that
-        the mode should be listed in the .bash_profile file with
-        the key `DB_MODE`.
+        Get the database mode from arguments passed through the CLI.
 
-       :return mode: str, database mode
+        Options for `--mode` are:
+            insert -- take any tickets pulled from JIra that are not in the db,
+                      and add them to the db
+            update -- take any tickets pulled from Jira that are either not in
+                      the db or that have been updated in Jira, and update the db
+        :return: str, database mode
     """
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', type=str, default='insert')
@@ -102,8 +106,16 @@ def process_tickets(issues, logger):
         ticket['status'] = issue['fields']['status']['name']
         ticket['summary'] = issue['fields']['summary']
         ticket['description'] = issue['fields']['description']
-        ticket['created'] = issue['fields']['created']
-        ticket['updated'] = issue['fields']['updated']
+
+        # these are string values; convert to datetime objects that are
+        # timezone aware (using "America/New_York" because that is how the
+        # Jira demo account is configured)
+        tz = ZoneInfo('America/New_York')
+        created = datetime.fromisoformat(issue['fields']['created'])
+        ticket['created'] = created.replace(tzinfo=tz)
+
+        updated = datetime.fromisoformat(issue['fields']['updated'])
+        ticket['updated'] = updated.replace(tzinfo=tz)
 
         # assignee can be null
         assignee = issue['fields'].get('assignee')
@@ -111,8 +123,9 @@ def process_tickets(issues, logger):
             if assignee else assignee
 
         # get and set a timestamp for records that are changed by this code
-        processed = datetime.now(timezone.utc).isoformat()
-        ticket['processed'] = processed
+        processed = datetime.now(tz)
+        ticket['processed'] = processed.replace(tzinfo=tz)
+        logger.info(f"\nprocessed: {ticket['processed']}")
 
         # add this reduced ticket to the data container
         ticket_data.append(ticket)
@@ -121,34 +134,25 @@ def process_tickets(issues, logger):
     return ticket_data, ticket_ids
 
 
-def get_ticket_ids_from_db(connection, jira_ids, logger):
+def get_ids_and_updateds_from_db(connection,logger):
     """
-        Get the ticket IDs from the database, compare with the ids for
-        our Jira tickets (because we only want to handle new ones), and
-        return the list of IDs we want to keep.
-
-        NOTE that we are only ADDING rows, and NOT updating rows with changes.
-        Also note that we need to convert the db fdata into a form we can use.
+        Get the ticket IDs and updated timestamps from the database
 
         :param connection: psycopg2.connection, the database connection
-        :param jira_ids: list, the Jira ticket IDs
         :param logger: logging.Logger, the logger
         :return ticket_ids: list, the ticket IDs
     """
     cursor = connection.cursor()
-    query = "SELECT jkey FROM jira;"
+    query = "SELECT jkey, updated FROM jira;"
     cursor.execute(query)
-    raw_existing_ids = cursor.fetchall()
+    raw_data = cursor.fetchall()
     cursor.close()
 
     # compare the ticket IDs from the DB with the Jira ticket IDs
-    existing_ids = [id[0] for id in raw_existing_ids]
-    logger.info(f"\nexisting_ids: {existing_ids}")
+    ids_and_updateds = {item[0]:item[1] for item in raw_data}
+    logger.info(f"\nids_and_updateds: {ids_and_updateds}")
 
-    # get the ids to delete from the Jira data
-    delete_ids = [id for id in jira_ids if id in existing_ids]
-
-    return delete_ids
+    return ids_and_updateds
 
 
 def create_insert_query(ticket, logger):
@@ -177,6 +181,33 @@ def create_insert_query(ticket, logger):
           "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING jkey;"
     return sql, values
 
+def create_update_query(ticket, logger):
+    """
+        Create the update query for the database.
+
+       :param ticket: dict, the ticket data
+       :return query: str, the insert query
+    """
+    logger.info(f"\nthis ticket: \n{ticket}")
+
+    # simplify the update; only fields we are likely to update
+    jkey = ticket['key']
+    jtype = ticket['type']
+    status = ticket['status']
+    summary = ticket['summary']
+    description = ticket['description']
+    #created = ticket['created']
+    updated = ticket['updated']
+    assignee = ticket['assignee']
+    processed = ticket['processed']
+
+    values = (jtype, status, summary,
+              description, updated, assignee, processed, jkey)
+    sql = "Update jira SET jtype = %s, status = %s, summary = %s, description = %s, " \
+          "updated = %s, assignee = %s, processed = %s " \
+          "WHERE jkey = %s RETURNING jkey;"
+    return sql, values
+
 
 def main():
     # start logging
@@ -199,7 +230,7 @@ def main():
 
     # ----------------- massage the tickets data -----------------
     # Step 3: extract and enrich the tickets data
-    updated_tickets, jira_ids = process_tickets(raw_issues, logger)
+    processed_jira_tickets, jira_ids = process_tickets(raw_issues, logger)
 
     # ----------------- db -----------------
     # Step 4: identify the database mode (because we may do different things)
@@ -211,29 +242,34 @@ def main():
         database='qdata',
         user='derek')
 
-    # Step 6: get the ids that are in the Jira data AND the db
-    delete_ids = get_ticket_ids_from_db(connection, jira_ids, logger)
-
-    # Step 7: update our Jira tickets data model to be only NEW tickets (wrt the db)
-    new_jira_tickets = [t for t in updated_tickets if t['key'] not in delete_ids]
-
     # ##################################################
     # # take specific db actions based on the CLI args #
     # ##################################################
     if mode == 'insert':
         # ##################################################
-        # # insert records that do not exists in DB        #
+        # # insert records that do not exist in DB        #
         # ##################################################
+
+        # get the ids that are in the Jira data AND the db
+        db_tickets = get_ids_and_updateds_from_db(connection, logger)
+        # db_ids = [t[0] for t in db_tickets]
+        db_ids = list(db_tickets.keys())
+        # get the ids to delete from the Jira data
+        delete_ids = [id for id in jira_ids if id in db_ids]
+
+        # update our Jira tickets data model to be only NEW tickets (wrt the db)
+        new_jira_tickets = [t for t in processed_jira_tickets
+                            if t['key'] not in delete_ids]
 
         logger.info(f"\n---> will insert {len(new_jira_tickets)} tickets")
         # insert the data
-        for ticket in new_jira_tickets:
+        for ticket in new_jira_tickets[:6]:
 
-            # Step 8a: assemble the query and the values to insert
+            # assemble the query and the values to insert
             sql, values = create_insert_query(ticket, logger)
             try:
                 cursor = connection.cursor()
-                # Step 8b: for each record to be inserted, insert it
+                # for each record to be inserted, insert it
                 cursor.execute(sql, values)
                 connection.commit()
 
@@ -245,14 +281,73 @@ def main():
             except psycopg2.errors.UniqueViolation as e:
                 logger.error(f"\nerror: {e}")
 
-    # Step 9: get the updated data from the db as a check
+    elif mode == 'update':
+        # ##################################################
+        # # insert new records AND updated records         #
+        # ##################################################
+
+        # get the ids and Jira `updated` timestamps from the db
+        db_tickets = get_ids_and_updateds_from_db(connection, logger)
+
+        for ticket in processed_jira_tickets:
+            logger.info(f"\nchecking ticket: {ticket['key']}"
+                        f"\n--> `updated` from Jira: {ticket['updated']}"
+                        f"\n--> `updated` from db:   {db_tickets.get(ticket['key'])}")
+
+            if ticket['key'] not in db_tickets:
+                # if the Jira ticket is NOT in the db, then we want to INSERT it
+                # assemble the query and the values to insert
+                logger.info(f"\n~~~> inserting ticket: {ticket['key']}")
+                sql, values = create_insert_query(ticket, logger)
+                try:
+                    cursor = connection.cursor()
+                    # for each record to be inserted, insert it
+                    cursor.execute(sql, values)
+                    connection.commit()
+
+                    # logger.info(f"\ncursor.statusmessage: {cursor.statusmessage}")
+                    # logger.info(f"\ncursor.rowcount: {cursor.rowcount}")
+                    res = cursor.fetchone()
+                    logger.info(f"\nthis res: {res}")
+                    cursor.close()
+                except psycopg2.errors.UniqueViolation as e:
+                    logger.error(f"\nerror: {e}")
+
+            elif ticket['key'] in db_tickets:
+                # if the ticket is in the db, check whether the `updated` from Jira
+                # is greater than the `updated` column in the db
+                logger.info(f"\njira updated: {ticket['updated']}\n  db updated: {db_tickets[ticket['key']]}")
+                if ticket['updated'] > db_tickets[ticket['key']]:
+                    # if the ticket's data from Jira is newer, then we want to UPDATE that row                    row_to_add = ticket
+                    logger.info(f"\n~~~> updating ticket: {ticket['key']}")
+                    # assemble the query and the values to insert
+                    sql, values = create_update_query(ticket, logger)
+                    try:
+                        cursor = connection.cursor()
+                        # for each record to be inserted, insert it
+                        # logger.info(f"\nsql: \n{sql}")
+                        # bdata = cursor.mogrify(sql, values)
+                        # logger.info(bdata.decode('utf-8'))
+                        cursor.execute(sql, values)
+                        connection.commit()
+
+                        res = cursor.fetchone()
+                        logger.info(f"\nthis res: {res}")
+                        cursor.close()
+                    except psycopg2.errors.UniqueViolation as e:
+                        logger.error(f"\nerror: {e}")
+
+            else:
+                logger.warning(f"\nnot updating ticket: {ticket['key']}")
+
+    # get the updated data from the db as a check
     cursor = connection.cursor()
     cursor.execute("SELECT * from jira;")
     result = cursor.fetchall()
     for i, row in enumerate(result):
         logger.info(f"row {i}: {row}")
 
-    # Step 10: clean up
+    # clean up
     cursor.close()
     connection.close()
 
